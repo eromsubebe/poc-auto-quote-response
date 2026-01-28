@@ -1,0 +1,1 @@
+# poc-auto-quote-response
