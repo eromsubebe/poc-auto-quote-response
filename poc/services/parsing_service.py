@@ -1,8 +1,8 @@
 import json
-import os
 from pathlib import Path
 
 from poc.config import settings
+from poc.services.storage import persist_attachment_bytes
 
 
 def parse_email_file(eml_path: str | Path, rfq_id: str) -> dict:
@@ -21,61 +21,38 @@ def parse_email_file(eml_path: str | Path, rfq_id: str) -> dict:
       - gemini_extraction: Gemini AI extraction result (if enabled)
       - extraction_method: "gemini" or "rule_based"
     """
-    import logging
-    from src.parsers.email_parser import EmailParser
-
-    logger = logging.getLogger(__name__)
+    # Lightweight in-repo .eml parsing (keeps the MVP self-contained)
+    from poc.parsers.email_parser import EmailParser
 
     parser = EmailParser()
     parsed = parser.parse_file(str(eml_path))
 
-    # Save attachments to disk
-    att_dir = settings.ATTACHMENTS_DIR / rfq_id
-    att_dir.mkdir(parents=True, exist_ok=True)
-
-    attachment_paths: list[str] = []
+    # Persist attachments and keep a local copy for parsing
+    attachment_refs: list[str] = []  # may contain local paths or gs:// URIs
+    attachment_local_paths: list[str] = []
     cipl_data = None
     msds_list: list[dict] = []
 
     for att in parsed.attachments:
-        att_path = att_dir / att.filename
-        att_path.write_bytes(att.content)
-        attachment_paths.append(str(att_path))
+        local_path, persisted_ref = persist_attachment_bytes(rfq_id, att.filename, att.content)
+        attachment_refs.append(persisted_ref)
+        attachment_local_paths.append(str(local_path))
 
-        # Parse CIPL attachments
+        # MVP note:
+        # - We persist and classify attachments, but we do not do heavy PDF parsing here.
+        # - For a later phase, add CIPL/MSDS PDF extraction and structured line-item parsing.
         if att.document_type == "CIPL":
-            try:
-                from src.parsers.cipl_parser import CIPLParser
-                cipl_parser = CIPLParser()
-                cipl_parsed = cipl_parser.parse_file(str(att_path))
-                cipl_data = _cipl_to_dict(cipl_parsed)
-            except Exception:
-                pass  # CIPL parsing failure is non-fatal
-
-        # Parse MSDS attachments
+            cipl_data = {"filename": att.filename, "stored_ref": persisted_ref}
         if att.document_type == "MSDS":
-            try:
-                from src.parsers.msds_parser import MSDSParser
-                msds_parser = MSDSParser()
-                msds_parsed = msds_parser.parse_file(str(att_path))
-                msds_list.append(_msds_to_dict(msds_parsed))
-            except Exception:
-                pass  # MSDS parsing failure is non-fatal
+            msds_list.append({"filename": att.filename, "stored_ref": persisted_ref})
 
-    # Determine DG status from MSDS data
+    # Determine DG status using lightweight heuristics (MVP)
     is_dg = False
-    if msds_list:
-        from src.parsers.msds_parser import MSDSParser
-        for att in parsed.attachments:
-            if att.document_type == "MSDS":
-                try:
-                    mp = MSDSParser()
-                    msds_parsed = mp.parse_file(str(att_dir / att.filename))
-                    if mp.is_dangerous_goods(msds_parsed):
-                        is_dg = True
-                        break
-                except Exception:
-                    pass
+    if any(a.document_type == "MSDS" for a in parsed.attachments):
+        is_dg = True
+    body_l = (parsed.body_text or "").lower()
+    if any(k in body_l for k in ["msds", "dangerous goods", "hazmat", "hazard", "un "]):
+        is_dg = True
 
     # Extract fields from parsed email (rule-based)
     ef = parsed.extracted_fields
@@ -97,7 +74,7 @@ def parse_email_file(eml_path: str | Path, rfq_id: str) -> dict:
         "is_dangerous_goods": is_dg,
         "urgency": ef.urgency.value if ef.urgency else "STANDARD",
         "reference": ef.reference_number,
-        "attachment_paths": attachment_paths,
+        "attachment_paths": attachment_refs,
         "total_weight_kg": ef.total_weight_kg,
         "extraction_method": "rule_based",
         "gemini_extraction": None,
@@ -112,7 +89,7 @@ def parse_email_file(eml_path: str | Path, rfq_id: str) -> dict:
             gemini_result = extractor.extract_from_email_with_attachments(
                 email_text=parsed.body_text or "",
                 subject=parsed.subject or "",
-                attachment_paths=attachment_paths
+                attachment_paths=attachment_local_paths
             )
 
             if gemini_result.confidence_score >= 0.5 and not gemini_result.error:

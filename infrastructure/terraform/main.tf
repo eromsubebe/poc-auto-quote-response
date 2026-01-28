@@ -9,6 +9,10 @@ terraform {
       source  = "hashicorp/google"
       version = "~> 5.0"
     }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.6"
+    }
   }
 
   # Configure backend for state storage
@@ -52,11 +56,9 @@ resource "google_sql_database_instance" "main" {
 
     ip_configuration {
       ipv4_enabled = true
-      # For production, configure private IP with VPC connector
-      authorized_networks {
-        name  = "allow-all"  # For development only
-        value = "0.0.0.0/0"
-      }
+      # IMPORTANT:
+      # Do NOT use 0.0.0.0/0 authorized networks.
+      # Connect from Cloud Run using the Cloud SQL connector instead.
     }
 
     backup_configuration {
@@ -101,7 +103,9 @@ resource "google_secret_manager_secret" "database_url" {
 
 resource "google_secret_manager_secret_version" "database_url" {
   secret = google_secret_manager_secret.database_url.id
-  secret_data = "postgresql://${google_sql_user.rfq.name}:${random_password.db_password.result}@${google_sql_database_instance.main.public_ip_address}:5432/${google_sql_database.rfq.name}"
+  # Cloud Run + Cloud SQL connector Unix socket connection string
+  # Requires Cloud Run deployment flag: --add-cloudsql-instances=<connection_name>
+  secret_data = "postgresql://${google_sql_user.rfq.name}:${random_password.db_password.result}@/${google_sql_database.rfq.name}?host=/cloudsql/${google_sql_database_instance.main.connection_name}"
 }
 
 # Cloud Storage bucket for email uploads

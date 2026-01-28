@@ -19,15 +19,27 @@ class Settings(BaseSettings):
     EMAILS_DIR: Path = Path("./poc_data/emails")
     ATTACHMENTS_DIR: Path = Path("./poc_data/attachments")
 
+    # Optional: persistent storage in GCS (recommended for Cloud Run)
+    # If set, uploaded .eml files and extracted attachments are stored in this bucket.
+    # The API still writes temporary files to /tmp for parsing.
+    GCS_BUCKET: str = ""
+    GCS_PREFIX: str = "rfq-poc"  # folder prefix inside the bucket
+
     # GCP / Vertex AI configuration
     GCP_PROJECT_ID: str = ""
     GCP_REGION: str = "us-central1"
     GEMINI_MODEL: str = "gemini-1.5-flash"
-    GEMINI_EXTRACTION_ENABLED: bool = True
+    # Default OFF for MVP; enable explicitly via env var when you're ready.
+    GEMINI_EXTRACTION_ENABLED: bool = False
+
+    # Internal endpoints (e.g., Cloud Scheduler calling SLA checks)
+    INTERNAL_CRON_TOKEN: str = ""
 
     # SLA configuration
-    SLA_TARGET_HOURS_STANDARD: int = 24
-    SLA_TARGET_HOURS_URGENT: int = 4
+    # Align with the business expectation: same-day responses.
+    # Standard: 4–5 hours, Urgent: shorter (tune during discovery/pilot).
+    SLA_TARGET_HOURS_STANDARD: int = 5
+    SLA_TARGET_HOURS_URGENT: int = 2
     SLA_CHECK_INTERVAL_MINUTES: int = 5
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
@@ -40,6 +52,10 @@ class Settings(BaseSettings):
     def gemini_enabled(self) -> bool:
         """Check if Gemini extraction is enabled and configured."""
         return bool(self.GEMINI_EXTRACTION_ENABLED and self.GCP_PROJECT_ID)
+
+    @property
+    def gcs_enabled(self) -> bool:
+        return bool(self.GCS_BUCKET)
 
 
 settings = Settings()
