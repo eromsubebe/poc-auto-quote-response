@@ -2,7 +2,10 @@
  * API client for the Creseada RFQ backend
  */
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+// In production (Cloud Run), prefer same-origin calls and let Next.js rewrite
+// /api/* to the backend via BACKEND_URL.
+// In local dev, set NEXT_PUBLIC_API_URL=http://localhost:8000 (see .env.example).
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "";
 
 // Types
 export interface Rate {
@@ -195,7 +198,7 @@ export async function getRFQ(rfqId: string): Promise<RFQDetail> {
 
 export async function uploadRFQ(file: File): Promise<RFQDetail> {
   const formData = new FormData();
-  formData.append("file", file);
+  formData.append("email_file", file);
 
   const response = await fetch(`${API_URL}/api/rfqs/upload`, {
     method: "POST",

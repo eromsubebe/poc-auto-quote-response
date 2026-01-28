@@ -17,6 +17,7 @@ from poc.schemas import (
 from poc.services import rate_service, workflow_service
 from poc.services.mock_odoo import mock_odoo
 from poc.services.parsing_service import parse_email_file
+from poc.services.storage import persist_email_bytes
 
 router = APIRouter(prefix="/api/rfqs", tags=["rfqs"])
 
@@ -25,18 +26,16 @@ router = APIRouter(prefix="/api/rfqs", tags=["rfqs"])
 def upload_rfq(email_file: UploadFile, db: Session = Depends(get_db)):
     """Upload an .eml file and run the full RFQ pipeline."""
 
-    # 1. Save .eml to disk
-    eml_filename = f"{uuid.uuid4()}.eml"
-    eml_path = settings.EMAILS_DIR / eml_filename
-    eml_path.parent.mkdir(parents=True, exist_ok=True)
-    eml_path.write_bytes(email_file.file.read())
-
-    return _run_pipeline(db, str(eml_path))
-
-
-def _run_pipeline(db: Session, eml_path: str) -> RFQCreateResponse:
-    """Core pipeline: parse → create RFQ → rate lookup → mock Odoo."""
+    # 1) Persist email (GCS when configured) + create temp copy for parsing
     rfq_id = str(uuid.uuid4())
+    eml_bytes = email_file.file.read()
+    local_eml_path, email_ref = persist_email_bytes(rfq_id, eml_bytes)
+
+    return _run_pipeline(db, rfq_id=rfq_id, eml_path=str(local_eml_path), email_ref=email_ref)
+
+
+def _run_pipeline(db: Session, rfq_id: str, eml_path: str, email_ref: str) -> RFQCreateResponse:
+    """Core pipeline: parse → create RFQ → rate lookup → mock Odoo."""
 
     # 2. Parse email
     try:
@@ -61,7 +60,7 @@ def _run_pipeline(db: Session, eml_path: str) -> RFQCreateResponse:
         }
 
     # 3. Create RFQ record
-    rfq = workflow_service.create_rfq(db, email_file_path=eml_path, parsed_data=parsed_data)
+    rfq = workflow_service.create_rfq(db, email_file_path=email_ref, parsed_data=parsed_data)
 
     # 4. Transition: received → parsing → rates_lookup
     rfq = workflow_service.transition(db, rfq.id, "parsing")
